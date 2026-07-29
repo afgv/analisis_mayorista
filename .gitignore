@@ -1,0 +1,303 @@
+# ============================================================
+# Python
+# ============================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribución y empaquetado
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Cachés
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# ============================================================
+# Entornos virtuales
+# ============================================================
+
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ============================================================
+# Variables de entorno, secretos y credenciales
+# ============================================================
+
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Archivos de secretos
+secrets/
+secret/
+credentials/
+private/
+*.secret
+*.secrets
+
+# Certificados y claves privadas
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+
+# Credenciales comunes de servicios cloud
+service-account*.json
+credentials*.json
+google-credentials*.json
+aws-credentials*
+azure-credentials*
+
+# Configuraciones locales con credenciales
+config.local.*
+settings.local.*
+connections.local.*
+database.local.*
+db_credentials.*
+connection_strings.*
+
+# ============================================================
+# Apache Airflow
+# ============================================================
+
+# Base de datos local de Airflow
+airflow.db
+airflow.db-shm
+airflow.db-wal
+
+# Configuración local generada por Airflow
+airflow.cfg
+webserver_config.py
+
+# PID y archivos temporales
+airflow-webserver.pid
+airflow-scheduler.pid
+airflow-triggerer.pid
+airflow-worker.pid
+*.pid
+
+# Logs de Airflow
+logs/
+airflow_logs/
+scheduler/
+dag_processor_manager/
+dag_processor/
+
+# Archivos generados por ejecución de DAGs
+*.out
+*.err
+
+# Standalone Airflow
+standalone_admin_password.txt
+
+# No ignorar los DAGs ni plugins del proyecto
+!dags/
+!dags/**
+!plugins/
+!plugins/**
+
+# ============================================================
+# Jupyter Notebook
+# ============================================================
+
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Opcional: notebooks convertidos automáticamente
+*.nbconvert.ipynb
+
+# ============================================================
+# Datos de entrada, salida y procesamiento
+# ============================================================
+
+# Datos locales
+data/
+datasets/
+input/
+inputs/
+output/
+outputs/
+exports/
+extracts/
+staging/
+processed/
+raw/
+temp/
+tmp/
+
+# Permitir archivos de documentación dentro de carpetas de datos
+!data/.gitkeep
+!data/README.md
+!input/.gitkeep
+!input/README.md
+!output/.gitkeep
+!output/README.md
+
+# Archivos tabulares o de intercambio
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.orc
+*.avro
+
+# Excel
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+
+# Dumps y respaldos de bases de datos
+*.sql
+*.dump
+*.bak
+*.backup
+*.bkp
+
+# Bases de datos locales
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Archivos comprimidos
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.gz
+
+# ============================================================
+# Logs y archivos temporales
+# ============================================================
+
+*.log
+*.log.*
+*.tmp
+*.temp
+*.swp
+*.swo
+*.lock
+
+# ============================================================
+# IDE y editores
+# ============================================================
+
+.vscode/
+.idea/
+*.code-workspace
+
+# Visual Studio
+.vs/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================
+# Sistema operativo
+# ============================================================
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+.directory
+.Trash-*
+
+# ============================================================
+# Docker y ejecución local
+# ============================================================
+
+docker-compose.override.yml
+compose.override.yml
+
+# Volúmenes locales
+docker-data/
+postgres-data/
+mysql-data/
+mssql-data/
+redis-data/
+
+# ============================================================
+# Herramientas de desarrollo
+# ============================================================
+
+# Poetry
+poetry.toml
+
+# Pipenv
+Pipfile.lock
+
+# Tox y Nox
+.tox/
+.nox/
+
+# Pre-commit
+.pre-commit-cache/
+
+# ============================================================
+# Archivos específicos del proyecto
+# ============================================================
+
+# Resultados de pruebas o ejecuciones locales
+reports/
+artifacts/
+results/
+checkpoints/
+
+# Archivos generados con fechas o procesos ETL
+*_extract.*
+*_export.*
+*_backup.*
+*_result.*
+*_results.*
+*_processed.*
