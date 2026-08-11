@@ -68,6 +68,7 @@ credentials/
 private/
 *.secret
 *.secrets
+PLAN_REINGENIERIA.md
 
 # Certificados y claves privadas
 *.pem
