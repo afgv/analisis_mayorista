@@ -1,0 +1,477 @@
+// =====================================================================
+//  RADAR MAYORISTA — medidas DAX
+//  Metodología Mayoristas v3 (marts_mayoristas.mayoristas_v3_*)
+//
+//  Regla de oro de este modelo: NADA se recalcula acá. Los umbrales,
+//  los percentiles, los flags C1/C2/C3 y el nivel ya vienen resueltos
+//  en dbt. Estas medidas solo agregan, formatean y explican.
+//
+//  Nombres de tabla que asume este archivo:
+//    Clientes             = mayoristas_v3_resumen  +  int_clientes_limpio (merge en PQ)
+//    Métricas por unidad  = mayoristas_v3_metricas_unidad
+//    Unidades             = mayoristas_v3_umbrales           (dimensión de unidad_medida)
+//    Facturas             = mayoristas_v3_tickets_unidad     (DirectQuery)
+//    Líneas de venta      = int_ventas_12m                   (DirectQuery, solo drillthrough)
+//    Sucursales           = dim_sucursal_mapeo
+//    Niveles              = tabla de presentación (orden + color + descripción)
+//    Calendario           = calendario generado en PQ
+//    Evolución por nivel  = mayoristas_v3_evolucion_nivel    (opcional, ver README)
+// =====================================================================
+
+
+// =====================================================================
+//  1. BASE — conteos y ventas
+// =====================================================================
+
+Cantidad de clientes =
+COUNTROWS ( Clientes )
+
+
+Ventas totales =
+SUM ( Clientes[ventas_totales] )
+
+
+// Guaraníes en KPI. Sin esto un tile muestra 1.284.930.115.402 y nadie
+// lo lee. FORMAT con locale explícito: no depender de la config regional
+// del que abre el informe.
+Ventas totales (compacto) =
+VAR _v = [Ventas totales]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( _v ),  BLANK (),
+        _v >= 1E12,      FORMAT ( _v / 1E12, "#,##0.0", "es-PY" ) & " bill. Gs",
+        _v >= 1E9,       FORMAT ( _v / 1E9,  "#,##0.0", "es-PY" ) & " mil M Gs",
+        _v >= 1E6,       FORMAT ( _v / 1E6,  "#,##0.0", "es-PY" ) & " M Gs",
+                         FORMAT ( _v,        "#,##0",   "es-PY" ) & " Gs"
+    )
+
+
+// El denominador saca SOLO el corte por nivel/puntaje. Cualquier otro
+// filtro activo (tipo_persona, búsqueda por nombre) se respeta, así que
+// el % se lee dentro de lo que el usuario está mirando y no contra el
+// universo entero.
+% de clientes =
+DIVIDE (
+    [Cantidad de clientes],
+    CALCULATE (
+        [Cantidad de clientes],
+        REMOVEFILTERS ( Niveles ),
+        REMOVEFILTERS ( Clientes[nivel_mayorista], Clientes[puntaje] )
+    )
+)
+
+
+% de ventas =
+DIVIDE (
+    [Ventas totales],
+    CALCULATE (
+        [Ventas totales],
+        REMOVEFILTERS ( Niveles ),
+        REMOVEFILTERS ( Clientes[nivel_mayorista], Clientes[puntaje] )
+    )
+)
+
+
+// La comparación que le importa al negocio: "Alto es el 4% de los
+// clientes pero el 19% de la venta" -> 4,7 veces su peso.
+Peso de la venta sobre el peso en clientes =
+DIVIDE ( [% de ventas], [% de clientes] )
+
+
+// =====================================================================
+//  2. TICKET PROMEDIO — leer la nota antes de usar
+// =====================================================================
+
+// OJO: promedio ENTRE CLIENTES del ticket promedio de cada cliente.
+// NO es el ticket promedio del segmento. Cada cliente pesa igual, venga
+// 3 veces al año o 300. Se hace así a propósito: es exactamente la
+// óptica con la que C3 calcula su umbral (percentil 75 entre clientes),
+// así que el KPI y el criterio hablan el mismo idioma. Un promedio
+// ponderado por ticket daría otro número y no compararía contra
+// umbral_c3.
+Ticket promedio (entre clientes) =
+AVERAGE ( Clientes[venta_promedio_ticket] )
+
+
+// El headline preferido para los tiles: la distribución de
+// venta_promedio_ticket tiene una cola derecha larguísima y la media se
+// va detrás de un puñado de clientes enormes. La mediana describe al
+// cliente típico del segmento.
+Ticket mediano (entre clientes) =
+MEDIAN ( Clientes[venta_promedio_ticket] )
+
+
+// Constante global de la metodología, repetida en cada fila de
+// mayoristas_v3_resumen a propósito. REMOVEFILTERS para que sea el mismo
+// número en cualquier contexto: es el corte de C3, no un agregado.
+Umbral C3 =
+CALCULATE ( MAX ( Clientes[umbral_c3] ), REMOVEFILTERS ( Clientes ) )
+
+
+// =====================================================================
+//  3. CRITERIOS — cuántos clientes dispara cada uno
+// =====================================================================
+
+Clientes que cumplen C1 =
+CALCULATE ( [Cantidad de clientes], KEEPFILTERS ( Clientes[c1_upt_alto] = 1 ) )
+
+Clientes que cumplen C2 =
+CALCULATE ( [Cantidad de clientes], KEEPFILTERS ( Clientes[c2_pct_grandes_alto] = 1 ) )
+
+Clientes que cumplen C3 =
+CALCULATE ( [Cantidad de clientes], KEEPFILTERS ( Clientes[c3_ventas_alto] = 1 ) )
+
+% que cumple C1 = DIVIDE ( [Clientes que cumplen C1], [Cantidad de clientes] )
+% que cumple C2 = DIVIDE ( [Clientes que cumplen C2], [Cantidad de clientes] )
+% que cumple C3 = DIVIDE ( [Clientes que cumplen C3], [Cantidad de clientes] )
+
+
+// =====================================================================
+//  4. MÉTRICAS POR UNIDAD DE MEDIDA
+//
+//  REGLA ESTRUCTURAL DEL MODELO: ninguna medida de esta sección agrega
+//  a través de unidad_medida. Todas devuelven BLANK en el total.
+//  Sumar o promediar kilos con unidades sueltas ES el bug de v2 —
+//  el modelo lo hace imposible por construcción, no por disciplina del
+//  que arma el visual.
+// =====================================================================
+
+UPT del cliente =
+IF (
+    HASONEVALUE ( Unidades[unidad_medida] ),
+    SELECTEDVALUE ( 'Métricas por unidad'[upt] ),
+    BLANK ()
+)
+
+
+% tickets grandes del cliente =
+IF (
+    HASONEVALUE ( Unidades[unidad_medida] ),
+    SELECTEDVALUE ( 'Métricas por unidad'[pct_tickets_grandes] ),
+    BLANK ()
+)
+
+
+Facturas en esta unidad =
+IF (
+    HASONEVALUE ( Unidades[unidad_medida] ),
+    SELECTEDVALUE ( 'Métricas por unidad'[tickets_unicos] ),
+    BLANK ()
+)
+
+
+// Los 3 cortes salen de la dimensión Unidades (mayoristas_v3_umbrales),
+// no de un DISTINCT sobre 62M de filas.
+Umbral UPT             = SELECTEDVALUE ( Unidades[umbral_upt] )
+Umbral % grandes       = SELECTEDVALUE ( Unidades[umbral_pct] )
+Umbral factura grande  = SELECTEDVALUE ( Unidades[umbral_ticket_grande] )
+
+
+// El normalizador. Unid corta en ~19,5 y KILOS en ~6,7: graficarlos
+// crudos uno al lado del otro vuelve a mezclar unidades. El ratio los
+// pone en la misma escala — 1,0 = justo en el corte.
+UPT vs umbral (veces) =
+DIVIDE ( [UPT del cliente], [Umbral UPT] )
+
+% grandes vs umbral (veces) =
+DIVIDE ( [% tickets grandes del cliente], [Umbral % grandes] )
+
+
+C1 en esta unidad =
+IF (
+    HASONEVALUE ( Unidades[unidad_medida] ),
+    IF ( SELECTEDVALUE ( 'Métricas por unidad'[c1_upt_alto] ) = 1, "Sí", "No" )
+)
+
+C2 en esta unidad =
+IF (
+    HASONEVALUE ( Unidades[unidad_medida] ),
+    IF ( SELECTEDVALUE ( 'Métricas por unidad'[c2_pct_grandes_alto] ) = 1, "Sí", "No" )
+)
+
+
+// =====================================================================
+//  5. FACTURAS (DirectQuery) — grano ticket x unidad_medida
+// =====================================================================
+
+// DISTINCTCOUNT porque una factura con kilos Y unidades sueltas ocupa
+// 2 filas en mayoristas_v3_tickets_unidad. Sin filtro de unidad esto
+// cuenta facturas de verdad; con una unidad seleccionada, facturas de
+// esa unidad.
+Facturas =
+DISTINCTCOUNT ( Facturas[ticket_id] )
+
+
+// OJO en el total sin filtro de unidad: una factura que fue grande en
+// KILOS pero normal en Unid cuenta como grande. Es la lectura correcta
+// ("esta factura fue grande en algo"), pero no es la suma de las
+// facturas grandes por unidad. Para el desglose, poné unidad_medida en
+// el visual.
+Facturas grandes =
+CALCULATE ( DISTINCTCOUNT ( Facturas[ticket_id] ), KEEPFILTERS ( Facturas[ticket_grande] = 1 ) )
+
+% de facturas grandes =
+DIVIDE ( [Facturas grandes], [Facturas] )
+
+Venta del período (facturas) =
+SUM ( Facturas[venta_gs] )
+
+
+// =====================================================================
+//  6. EXPLICACIÓN — el corazón del tablero
+//
+//  Nada de semáforos sueltos. Cada criterio se cuenta en castellano,
+//  con los números del cliente y el corte contra el que se lo comparó.
+// =====================================================================
+
+// -- helpers -----------------------------------------------------------
+
+Unidades donde cumple C1 =
+VAR _t =
+    CALCULATETABLE (
+        VALUES ( 'Métricas por unidad'[unidad_medida] ),
+        REMOVEFILTERS ( Unidades ),
+        REMOVEFILTERS ( 'Métricas por unidad'[unidad_medida] ),
+        'Métricas por unidad'[c1_upt_alto] = 1
+    )
+RETURN
+    CONCATENATEX ( _t, 'Métricas por unidad'[unidad_medida], ", ", 'Métricas por unidad'[unidad_medida], ASC )
+
+
+Unidades donde cumple C2 =
+VAR _t =
+    CALCULATETABLE (
+        VALUES ( 'Métricas por unidad'[unidad_medida] ),
+        REMOVEFILTERS ( Unidades ),
+        REMOVEFILTERS ( 'Métricas por unidad'[unidad_medida] ),
+        'Métricas por unidad'[c2_pct_grandes_alto] = 1
+    )
+RETURN
+    CONCATENATEX ( _t, 'Métricas por unidad'[unidad_medida], ", ", 'Métricas por unidad'[unidad_medida], ASC )
+
+
+// "Unid" en la base, "unidades sueltas" cuando se lo contás a alguien.
+Unidad en palabras =
+SWITCH (
+    SELECTEDVALUE ( Unidades[unidad_medida] ),
+    "Unid",   "unidades sueltas",
+    "KILOS",  "kilos",
+    "LITROS", "litros",
+    "Pack",   "packs",
+    SELECTEDVALUE ( Unidades[unidad_medida] )
+)
+
+
+// -- veredicto ---------------------------------------------------------
+
+Veredicto =
+VAR _nivel = SELECTEDVALUE ( Clientes[nivel_mayorista] )
+VAR _pje   = SELECTEDVALUE ( Clientes[puntaje] )
+RETURN
+    IF (
+        ISBLANK ( _nivel ),
+        "Seleccioná un cliente.",
+        UPPER ( _nivel ) & "  ·  cumple " & _pje & " de 3 criterios"
+    )
+
+
+Por qué C1 =
+VAR _ok = SELECTEDVALUE ( Clientes[c1_upt_alto] )
+VAR _u  = [Unidades donde cumple C1]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( _ok ), BLANK (),
+        _ok = 1,
+            "Compra grande cada vez que viene. Su promedio por factura en " & _u &
+            " está entre el 25% más alto de todos los clientes que compran en esa misma unidad de medida.",
+            "No llega al corte en ninguna unidad. Su promedio por factura queda por debajo del 25% más alto " &
+            "en Unid, KILOS, LITROS y Pack."
+    )
+
+
+Por qué C2 =
+VAR _ok  = SELECTEDVALUE ( Clientes[c2_pct_grandes_alto] )
+VAR _u   = [Unidades donde cumple C2]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( _ok ), BLANK (),
+        _ok = 1,
+            "Y lo hace de forma constante: en " & _u &
+            " la mayor parte de sus facturas superan el corte de factura grande, no fue una compra puntual.",
+            "Compra grande de vez en cuando, no de forma sostenida: el porcentaje de sus facturas que superan " &
+            "el corte se queda corto en todas las unidades."
+    )
+
+
+Por qué C3 =
+VAR _ok  = SELECTEDVALUE ( Clientes[c3_ventas_alto] )
+VAR _vpt = SELECTEDVALUE ( Clientes[venta_promedio_ticket] )
+VAR _f   = FORMAT ( _vpt,       "#,##0", "es-PY" )
+VAR _fu  = FORMAT ( [Umbral C3], "#,##0", "es-PY" )
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( _ok ), BLANK (),
+        _ok = 1,
+            "Deja " & _f & " Gs por visita, por encima del corte de " & _fu &
+            " Gs. Este criterio mira todas las unidades de medida juntas, porque acá todo está en guaraníes.",
+            "Deja " & _f & " Gs por visita. El corte está en " & _fu &
+            " Gs. Este criterio mira todas las unidades de medida juntas, porque acá todo está en guaraníes."
+    )
+
+
+// Versión de una sola pieza, para tooltips y para exportar. En un
+// visual de tarjeta los saltos de línea se pierden — usar Tabla con
+// encabezado apagado y ajuste de texto encendido.
+Por qué este nivel =
+VAR _br = UNICHAR ( 10 )
+RETURN
+    [Veredicto] & _br & _br &
+    [Por qué C1] & _br & _br &
+    [Por qué C2] & _br & _br &
+    [Por qué C3]
+
+
+// -- explicación a nivel de factura ------------------------------------
+
+Por qué esta factura =
+VAR _g   = SELECTEDVALUE ( Facturas[ticket_grande] )
+VAR _u   = SELECTEDVALUE ( Facturas[unidades] )
+VAR _um  = SELECTEDVALUE ( Facturas[umbral_ticket_grande] )
+VAR _un  = SELECTEDVALUE ( Facturas[unidad_medida] )
+VAR _fu  = FORMAT ( _u,  "#,##0.##", "es-PY" )
+VAR _fum = FORMAT ( _um, "#,##0.##", "es-PY" )
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( _g ), BLANK (),
+        _g = 1, "Grande — " & _fu & " " & _un & " en una sola factura, contra un corte de " & _fum & ".",
+                "Normal — " & _fu & " " & _un & ". El corte de factura grande en " & _un & " está en " & _fum & "."
+    )
+
+
+// Cuánto se pasó del corte. Ordenar el historial de facturas por esta
+// medida pone arriba las que mejor defienden la clasificación.
+Veces el corte de factura grande =
+DIVIDE (
+    SELECTEDVALUE ( Facturas[unidades] ),
+    SELECTEDVALUE ( Facturas[umbral_ticket_grande] )
+)
+
+
+// =====================================================================
+//  7. PÁGINA DE METODOLOGÍA — texto que se arma solo desde los umbrales
+//
+//  Cero números escritos a mano. Si dbt recalcula los cortes, la página
+//  de metodología cambia sola. Van sobre un visual (tabla o tarjeta
+//  múltiple) con Unidades[unidad_medida] como fila: se generan las 4
+//  frases, una por unidad.
+// =====================================================================
+
+Regla — factura grande =
+VAR _un = SELECTEDVALUE ( Unidades[unidad_medida] )
+VAR _um = [Umbral factura grande]
+RETURN
+    IF (
+        ISBLANK ( _um ),
+        BLANK (),
+        "Una factura cuenta como GRANDE a partir de " & FORMAT ( _um, "#,##0.##", "es-PY" ) &
+        " " & [Unidad en palabras] & " en un mismo ticket."
+    )
+
+
+Regla — C1 volumen =
+VAR _um = [Umbral UPT]
+RETURN
+    IF (
+        ISBLANK ( _um ),
+        BLANK (),
+        "Un cliente COMPRA GRANDE si su promedio llega a " & FORMAT ( _um, "#,##0.##", "es-PY" ) &
+        " " & [Unidad en palabras] & " por factura."
+    )
+
+
+Regla — C2 constancia =
+VAR _um = [Umbral % grandes]
+RETURN
+    IF (
+        ISBLANK ( _um ),
+        BLANK (),
+        "Y COMPRA GRANDE SEGUIDO si al menos el " & FORMAT ( _um, "0%", "es-PY" ) &
+        " de sus facturas en " & [Unidad en palabras] & " son grandes."
+    )
+
+
+Regla — C3 gasto por visita =
+"Un cliente GASTA MUCHO POR VISITA si deja más de " & FORMAT ( [Umbral C3], "#,##0", "es-PY" ) &
+" Gs en una factura promedio. Este criterio no se abre por unidad de medida: " &
+"suma todo lo que compró, incluidos Blis, Metros y Ramo, porque acá todo está en guaraníes."
+
+
+// =====================================================================
+//  8. CABECERA — estado y frescura
+// =====================================================================
+
+// Aviso obligatorio mientras v3 no reemplace a v2 en producción.
+// Cuando se haga el cutover, esta medida es lo único que hay que
+// cambiar para que el aviso desaparezca de las 6 páginas.
+Estado de la metodología =
+"METODOLOGÍA V3 · EN VALIDACIÓN — la clasificación de producción sigue siendo v2 (dim_clientes_mayoristas). " &
+"Usar estos niveles para explorar, todavía no para fijar precios ni crédito."
+
+
+// NOW() en el servicio devuelve UTC. La hora de actualización real
+// entra por Power Query (columna FechaActualizacion en la tabla
+// Actualización, ver README) — acá solo se formatea.
+Datos hasta =
+"Ventana móvil de 12 meses cerrados · datos hasta " &
+FORMAT ( MAX ( Calendario[fecha] ), "MMMM yyyy", "es-PY" ) &
+"  ·  actualizado el " & FORMAT ( MAX ( 'Actualización'[FechaActualizacion] ), "dd/MM/yyyy HH:mm", "es-PY" )
+
+
+// =====================================================================
+//  9. TENDENCIA — depende del mart opcional (ver README)
+// =====================================================================
+
+Venta del mes =
+SUM ( 'Evolución por nivel'[venta_gs] )
+
+Clientes activos en el mes =
+SUM ( 'Evolución por nivel'[clientes_activos] )
+
+Facturas del mes =
+SUM ( 'Evolución por nivel'[tickets] )
+
+
+// La aclaración que evita que alguien lea mal el gráfico.
+Nota de la tendencia =
+"El nivel es la clasificación de HOY aplicada hacia atrás: el gráfico muestra cómo compraron durante el año " &
+"los clientes que hoy son Alto/Medio/Potencial/Minorista. No dice cuántos eran Alto en cada mes — para eso hace " &
+"falta versionar la clasificación (ver README)."
+
+
+// =====================================================================
+//  10. CONTROL v3 vs v2 — opcional, para la decisión de cutover
+//      Requiere importar dim_clientes_mayoristas FILTRADA a ambito = 'GLOBAL'
+//      (esa tabla tiene un ámbito por sucursal además del global; sin el
+//      filtro se cuenta cada cliente hasta 4 veces).
+// =====================================================================
+
+Clientes v2 =
+DISTINCTCOUNT ( 'Clientes v2'[cliente_id_limpio] )
+
+Clientes que cambian de nivel =
+CALCULATE (
+    [Cantidad de clientes],
+    FILTER (
+        Clientes,
+        Clientes[nivel_mayorista]
+            <> RELATED ( 'Clientes v2'[nivel_mayorista] )
+    )
+)
+
+% que cambia de nivel =
+DIVIDE ( [Clientes que cambian de nivel], [Cantidad de clientes] )
