@@ -302,3 +302,7 @@ checkpoints/
 *_result.*
 *_results.*
 *_processed.*
+# Tablero Power BI -- dependencias del validador de tema (no se commitean)
+tablero_powerbi/node_modules/
+tablero_powerbi/.schemas/
+tablero_powerbi/package-lock.json

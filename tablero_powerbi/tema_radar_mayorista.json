@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/microsoft/powerbi-desktop-samples/main/Report%20Theme%20JSON%20Schema/reportThemeSchema-2.156.json",
   "name": "Ahorrazo - Radar Mayorista",
 
   "dataColors": [
@@ -28,7 +29,6 @@
   "tableAccent": "#B81C1F",
 
   "foreground": "#1A1112",
-  "secondaryForeground": "#5B4F4E",
   "foregroundNeutralSecondary": "#5B4F4E",
   "foregroundNeutralTertiary": "#8A7C7B",
 
@@ -73,8 +73,7 @@
             "gridlineShow": false,
             "labelColor": { "solid": { "color": "#5B4F4E" } },
             "fontFamily": "Segoe UI",
-            "fontSize": 10,
-            "lineColor": { "solid": { "color": "#E7DEDC" } }
+            "fontSize": 10
           }
         ],
         "valueAxis": [
@@ -93,7 +92,7 @@
         "legend": [
           {
             "show": true,
-            "position": "TopLeft",
+            "position": "Top",
             "showTitle": false,
             "labelColor": { "solid": { "color": "#5B4F4E" } },
             "fontFamily": "Segoe UI",
@@ -149,8 +148,8 @@
 
     "slicer": {
       "*": {
-        "header": [ { "show": true, "fontColor": { "solid": { "color": "#5B4F4E" } }, "fontFamily": "Segoe UI Semibold", "fontSize": 10, "background": { "solid": { "color": "#FFFFFF" } }, "outline": "None" } ],
-        "items": [ { "fontColor": { "solid": { "color": "#1A1112" } }, "background": { "solid": { "color": "#FFFFFF" } }, "fontFamily": "Segoe UI", "fontSize": 10, "outline": "None" } ],
+        "header": [ { "show": true, "fontColor": { "solid": { "color": "#5B4F4E" } }, "fontFamily": "Segoe UI Semibold", "textSize": 10, "background": { "solid": { "color": "#FFFFFF" } } } ],
+        "items": [ { "fontColor": { "solid": { "color": "#1A1112" } }, "background": { "solid": { "color": "#FFFFFF" } }, "fontFamily": "Segoe UI", "textSize": 10 } ],
         "background": [ { "show": true, "color": { "solid": { "color": "#FFFFFF" } }, "transparency": 0 } ]
       }
     },
@@ -175,7 +174,6 @@
             "backColor": { "solid": { "color": "#F4EEEC" } },
             "fontFamily": "Segoe UI Semibold",
             "fontSize": 10,
-            "outline": "BottomOnly",
             "wordWrap": true
           }
         ],
@@ -215,8 +213,8 @@
             "textSize": 10
           }
         ],
-        "columnHeaders": [ { "fontColor": { "solid": { "color": "#5B4F4E" } }, "backColor": { "solid": { "color": "#F4EEEC" } }, "fontFamily": "Segoe UI Semibold", "fontSize": 10, "outline": "BottomOnly" } ],
-        "rowHeaders": [ { "fontColor": { "solid": { "color": "#1A1112" } }, "fontFamily": "Segoe UI Semibold", "fontSize": 10, "outline": "None" } ],
+        "columnHeaders": [ { "fontColor": { "solid": { "color": "#5B4F4E" } }, "backColor": { "solid": { "color": "#F4EEEC" } }, "fontFamily": "Segoe UI Semibold", "fontSize": 10 } ],
+        "rowHeaders": [ { "fontColor": { "solid": { "color": "#1A1112" } }, "fontFamily": "Segoe UI Semibold", "fontSize": 10 } ],
         "values": [ { "fontColorPrimary": { "solid": { "color": "#1A1112" } }, "fontFamily": "Segoe UI", "fontSize": 10 } ],
         "subTotals": [ { "rowSubtotals": false, "columnSubtotals": false } ]
       }

@@ -1,0 +1,11 @@
+{
+  "name": "tablero-powerbi-mayoristas",
+  "private": true,
+  "description": "Utilidades del tablero Radar Mayorista. Solo para validar el tema antes de importarlo a Power BI.",
+  "scripts": {
+    "validar": "node validar_tema.js tema_radar_mayorista.json"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  }
+}
