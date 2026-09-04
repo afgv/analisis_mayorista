@@ -16,6 +16,15 @@
 //  Los patrones sin parte decimal ("#,##0", "0%") y los que tienen
 //  dígitos obligatorios ("0.0") no sufren el problema.
 //
+//  UNA SOLA MEDIDA DE VENTA. Antes había dos ([Venta] sobre una
+//  columna congelada de Clientes, y [Venta] sobre el mart) y se
+//  fundieron en [Venta], que lee el hecho. Consecuencia a tener presente:
+//  la venta ahora RESPONDE a los filtros de fecha, sucursal, producto y
+//  categoría. Cualquier medida que la divida por un conteo tiene que
+//  dividir por un conteo del mismo período -- por eso existe
+//  [Clientes activos] y por eso [Cantidad de clientes] ya no va en
+//  ningún denominador junto a la venta.
+//
 //  Regla de oro de este modelo: NADA se recalcula acá. Los umbrales,
 //  los percentiles, los flags C1/C2/C3 y el nivel ya vienen resueltos
 //  en dbt. Estas medidas solo agregan, formatean y explican.
@@ -26,14 +35,17 @@
 //    Métricas por unidad  = mayoristas_v3_metricas_unidad
 //    Unidades             = mayoristas_v3_umbrales           (dimensión de unidad_medida)
 //    Facturas             = mayoristas_v3_tickets_unidad     (import, 8,0 M filas)
-//    Líneas de venta      = mayoristas_v3_lineas_factura     (DirectQuery, solo página 5)
+//    Ventas               = intermediate.int_ventas_12m      (import, 62 M filas -- línea de producto)
 //    Sucursales           = dim_sucursal_mapeo
 //    Niveles              = tabla de presentación (orden + color + descripción)
 //    Calendario           = calendario generado en PQ
 //    Productos            = int_productos_limpio             (nombre + unidad_medida por producto)
 //    Criterios            = tabla de presentación (C1/C2/C3, escrita a mano)
-//    Canasta              = mayoristas_v3_canasta            (nivel x frecuencia x sucursal x producto x día)
-//    Evolución por nivel  = mayoristas_v3_evolucion_nivel    (opcional, ver README)
+//
+//  Canasta y Evolución por nivel YA NO EXISTEN en el modelo. Las dos eran
+//  pre-agregados que suplían la falta de una tabla de venta a grano de
+//  línea; con Ventas importada las dos quedaron sin consumidor. Ver el
+//  artefacto "Modelo a grano de línea".
 // =====================================================================
 
 
@@ -45,15 +57,43 @@ Cantidad de clientes =
 COUNTROWS ( Clientes )
 
 
-Ventas totales =
-SUM ( Clientes[ventas_totales] )
+// La única medida de venta del modelo. Lee el hecho a grano de línea, así
+// que responde a fecha, sucursal, producto, categoría y cliente.
+//
+// NO usar Clientes[ventas_totales] para esto. Esa columna es el insumo de
+// la clasificación: está congelada en la ventana de 12 meses y no se
+// mueve con ningún segmentador. Sirve para explicar el nivel de UN
+// cliente en la ficha, no para totalizar en un visual.
+Venta =
+SUM ( Ventas[venta_gs] )
+
+
+// Unidades vendidas. Solo tiene sentido con UNA unidad de medida en
+// contexto: sumar kilos con unidades sueltas no da nada. Las medidas que
+// la usan se encargan de la guarda.
+Unidades =
+SUM ( Ventas[unidades] )
+
+
+// Clientes con al menos una compra en el contexto actual. Es el
+// denominador que va con [Venta]: [Cantidad de clientes] cuenta filas de
+// Clientes, que el calendario no filtra, así que dividir la venta de un
+// mes por ese conteo da la venta de un mes sobre los clientes de doce.
+Clientes activos =
+DISTINCTCOUNT ( Ventas[cliente_id_limpio] )
+
+
+// Facturas distintas del período. Reemplaza al conteo congelado de
+// visitas cuando hay un filtro de fecha puesto.
+Facturas del período =
+DISTINCTCOUNT ( Ventas[ticket_id] )
 
 
 // Guaraníes en KPI. Sin esto un tile muestra 1.284.930.115.402 y nadie
 // lo lee. FORMAT con locale explícito: no depender de la config regional
 // del que abre el informe.
-Ventas totales (compacto) =
-VAR _v = [Ventas totales]
+Venta (compacto) =
+VAR _v = [Venta]
 RETURN
     SWITCH (
         TRUE (),
@@ -82,9 +122,9 @@ DIVIDE (
 
 % de ventas =
 DIVIDE (
-    [Ventas totales],
+    [Venta],
     CALCULATE (
-        [Ventas totales],
+        [Venta],
         REMOVEFILTERS ( Niveles ),
         REMOVEFILTERS ( Clientes[nivel_mayorista], Clientes[puntaje] )
     )
@@ -100,10 +140,10 @@ DIVIDE (
 // de porcentajes (% de ventas / % de clientes) da exactamente el mismo
 // número, pero no se puede explicar sin dibujar.
 Veces el cliente promedio =
-VAR _media_nivel = DIVIDE ( [Ventas totales], [Cantidad de clientes] )
+VAR _media_nivel = DIVIDE ( [Venta], [Clientes activos] )
 VAR _media_base =
     CALCULATE (
-        DIVIDE ( [Ventas totales], [Cantidad de clientes] ),
+        DIVIDE ( [Venta], [Clientes activos] ),
         REMOVEFILTERS ( Niveles ),
         REMOVEFILTERS ( Clientes[nivel_mayorista], Clientes[puntaje] )
     )
@@ -114,7 +154,7 @@ RETURN
 // La venta media por CLIENTE, no por factura. Conviene tenerla visible
 // al lado del ratio: es el número del que sale.
 Venta media por cliente =
-DIVIDE ( [Ventas totales], [Cantidad de clientes] )
+DIVIDE ( [Venta], [Clientes activos] )
 
 
 // =====================================================================
@@ -128,6 +168,29 @@ DIVIDE ( [Ventas totales], [Cantidad de clientes] )
 // así que el KPI y el criterio hablan el mismo idioma. Un promedio
 // ponderado por ticket daría otro número y no compararía contra
 // umbral_c3.
+// HAY TRES MEDIDAS PARECIDAS Y NO SON LA MISMA. Antes de poner una en un
+// visual, elegir cual de estas tres preguntas se esta contestando:
+//
+//   [Venta por factura]  --  de cada factura de este segmento, cuanto
+//     deja. Suma toda la venta y la divide por todas las facturas, asi
+//     que un cliente que factura mucho pesa mas que uno chico. Es la
+//     unica de las tres que responde a los filtros de fecha, sucursal y
+//     categoria. Es la que va en una card.
+//
+//   [Ticket promedio (entre clientes)]  --  cuanto deja por factura el
+//     cliente tipico. Promedia los promedios, asi que cada cliente pesa
+//     igual sin importar su tamano. Sale de una columna congelada de
+//     Clientes: no se mueve con ningun segmentador.
+//
+//   [Venta promedio por factura del cliente]  --  el numero de UN
+//     cliente, para la ficha. Vacio si hay mas de uno en contexto.
+//
+// Con un segmento sin filtros la primera suele dar mas alto que la
+// segunda: los clientes grandes arrastran el promedio agregado.
+Venta por factura =
+DIVIDE ( [Venta], [Facturas del período] )
+
+
 Ticket promedio (entre clientes) =
 AVERAGE ( Clientes[venta_promedio_ticket] )
 
@@ -254,8 +317,31 @@ RETURN
 // 2 filas en mayoristas_v3_tickets_unidad. Sin filtro de unidad esto
 // cuenta facturas de verdad; con una unidad seleccionada, facturas de
 // esa unidad.
+// Las tres medidas de esta carpeta leen la tabla Facturas, que cuelga de
+// Unidades y no de Productos. En un visual cuyo eje sea
+// Productos[unidad_medida] -- el que se usa en las paginas de canasta,
+// porque es el unico que filtra Ventas -- ese filtro no les llega y las
+// tres devuelven el total del cliente repetido en todas las filas.
+//
+// TREATAS aplica los valores que hay en contexto de una columna sobre
+// otra sin relacion de por medio. Si Productos no esta filtrado, VALUES
+// devuelve las 7 unidades de medida, Facturas solo tiene 4, y la
+// interseccion no cambia nada: la medida se comporta como antes. Si el
+// eje pone una unidad, la medida la respeta.
+//
+// Efecto buscado: en las filas de Blis, Metros y Ramo estas medidas pasan
+// a dar VACIO en vez de un porcentaje. Es correcto -- esas tres unidades
+// no entran en C1 ni C2, no tienen corte de factura grande, y un numero
+// ahi seria inventado.
+//
+// Ojo al leer el visual: las filas no suman al total. Una factura que
+// lleva kilos y unidades cuenta en las dos, porque el grano de Facturas
+// es factura x unidad de medida.
 Facturas =
-DISTINCTCOUNT ( Facturas[ticket_id] )
+CALCULATE (
+    DISTINCTCOUNT ( Facturas[ticket_id] ),
+    TREATAS ( VALUES ( Productos[unidad_medida] ), Facturas[unidad_medida] )
+)
 
 
 // OJO en el total sin filtro de unidad: una factura que fue grande en
@@ -264,13 +350,133 @@ DISTINCTCOUNT ( Facturas[ticket_id] )
 // facturas grandes por unidad. Para el desglose, poné unidad_medida en
 // el visual.
 Facturas grandes =
-CALCULATE ( DISTINCTCOUNT ( Facturas[ticket_id] ), KEEPFILTERS ( Facturas[ticket_grande] = 1 ) )
+CALCULATE (
+    DISTINCTCOUNT ( Facturas[ticket_id] ),
+    KEEPFILTERS ( Facturas[ticket_grande] = 1 ),
+    TREATAS ( VALUES ( Productos[unidad_medida] ), Facturas[unidad_medida] )
+)
 
 % de facturas grandes =
 DIVIDE ( [Facturas grandes], [Facturas] )
 
 Venta del período (facturas) =
-SUM ( Facturas[venta_gs] )
+CALCULATE (
+    SUM ( Facturas[venta_gs] ),
+    TREATAS ( VALUES ( Productos[unidad_medida] ), Facturas[unidad_medida] )
+)
+
+
+// ---------------------------------------------------------------------
+//  Detalle de factura (página de drill-through)
+//
+//  Las dos medidas que arman la tabla de líneas. Devuelven vacío cuando no
+//  hay UNA sola factura en contexto, y eso es lo que hace que la tabla
+//  muestre solo los productos de esa factura: Power BI elimina las filas
+//  donde todas las medidas dan vacío, así que los ~40 mil productos que
+//  no están en el ticket desaparecen solos. Una medida que devolviera 0
+//  en vez de vacío llenaría la tabla entera.
+// ---------------------------------------------------------------------
+
+Unidades de la factura =
+VAR _t = SELECTEDVALUE ( Facturas[ticket_id] )
+RETURN
+    IF (
+        ISBLANK ( _t ),
+        BLANK (),
+        CALCULATE (
+            SUM ( Ventas[unidades] ),
+            TREATAS ( { _t }, Ventas[ticket_id] )
+        )
+    )
+
+
+Venta de la factura =
+VAR _t = SELECTEDVALUE ( Facturas[ticket_id] )
+RETURN
+    IF (
+        ISBLANK ( _t ),
+        BLANK (),
+        CALCULATE ( [Venta], TREATAS ( { _t }, Ventas[ticket_id] ) )
+    )
+
+
+// Cuantos productos distintos entraron en la factura. Un mayorista que
+// surte un negocio se lleva pocas lineas de mucha cantidad; un consumidor
+// final se lleva muchas lineas de a una.
+Productos en la factura =
+VAR _t = SELECTEDVALUE ( Facturas[ticket_id] )
+RETURN
+    IF (
+        ISBLANK ( _t ),
+        BLANK (),
+        CALCULATE (
+            DISTINCTCOUNT ( Ventas[producto_id] ),
+            TREATAS ( { _t }, Ventas[ticket_id] )
+        )
+    )
+
+
+// Cuanto vale esta factura contra lo que el cliente deja habitualmente.
+// 1,0 es una factura como cualquier otra suya; 3,0 es una compra que vale
+// el triple de su promedio.
+//
+// Funciona sin ningun REMOVEFILTERS por una razon que conviene entender
+// antes de tocarla: en esta pagina el contexto tiene el cliente (que llega
+// con el drill-through) y el ticket. Como Facturas NO esta relacionada con
+// Ventas, el filtro del ticket no llega a Ventas, asi que [Venta por
+// factura] ya es el promedio del cliente en los 12 meses. El unico que
+// mira la factura puntual es [Venta de la factura], via TREATAS.
+Veces la factura promedio del cliente =
+DIVIDE ( [Venta de la factura], [Venta por factura] )
+
+
+// Las facturas del cliente en el ano. Hay que sacar el filtro del ticket
+// que puso el drill-through, o cuenta 1.
+Facturas del cliente en el año =
+CALCULATE (
+    DISTINCTCOUNT ( Facturas[ticket_id] ),
+    REMOVEFILTERS ( Facturas[ticket_id] )
+)
+
+
+// Las unidades que se comparan contra el corte, dentro de una unidad de
+// medida. Sale de Facturas y no de Ventas a proposito: es exactamente el
+// numero que el modelo compara contra umbral_ticket_grande.
+Unidades contra el corte =
+SUM ( Facturas[unidades] )
+
+
+// Cuanto pesa cada linea dentro de la factura. El denominador saca el
+// filtro de Productos, asi que es la factura entera y no la linea.
+% de la factura =
+DIVIDE (
+    [Venta de la factura],
+    CALCULATE ( [Venta de la factura], REMOVEFILTERS ( Productos ) )
+)
+
+
+// El veredicto en castellano, para la tarjeta de la pagina de detalle.
+// Lista las unidades de medida en las que ESTA factura conto como grande.
+// Una factura puede ser grande en kilos y normal en unidades: son dos
+// varas distintas y la frase lo dice.
+Veredicto de la factura =
+VAR _t = SELECTEDVALUE ( Facturas[ticket_id] )
+VAR _grandes =
+    CALCULATE (
+        CONCATENATEX (
+            VALUES ( Facturas[unidad_medida] ),
+            Facturas[unidad_medida],
+            " y "
+        ),
+        KEEPFILTERS ( Facturas[ticket_grande] = 1 )
+    )
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( _t ),       BLANK (),
+        ISBLANK ( _grandes ), "Esta factura no superó el corte en ninguna unidad de medida, así que no cuenta para C2.",
+        "Contó como factura grande en " & _grandes & ". Cada unidad de medida se mide contra su propio corte."
+    )
 
 
 // =====================================================================
@@ -506,17 +712,21 @@ FORMAT ( MAX ( Calendario[fecha] ), "MMMM yyyy", "es-PY" ) &
 
 
 // =====================================================================
-//  9. TENDENCIA — depende del mart opcional (ver README)
+//  9. TENDENCIA
+//
+//  Ya no depende de ningún mart. Las tres medidas que leían
+//  mayoristas_v3_evolucion_nivel salen del hecho: el "del mes" lo pone el
+//  eje del visual, no la medida. Ese mart se puede jubilar.
 // =====================================================================
 
 Venta del mes =
-SUM ( 'Evolución por nivel'[venta_gs] )
+[Venta]
 
 Clientes activos en el mes =
-SUM ( 'Evolución por nivel'[clientes_activos] )
+[Clientes activos]
 
 Facturas del mes =
-SUM ( 'Evolución por nivel'[tickets] )
+[Facturas del período]
 
 
 // La aclaración que evita que alguien lea mal el gráfico.
@@ -524,86 +734,6 @@ Nota de la tendencia =
 "El nivel es la clasificación de HOY aplicada hacia atrás: el gráfico muestra cómo compraron durante el año " &
 "los clientes que hoy son Alto/Medio/Potencial/Minorista. No dice cuántos clientes había en cada nivel en cada " &
 "mes — la clasificación se recalcula entera en cada actualización y no guarda historia."
-
-
-// =====================================================================
-//  10. CERCA DEL CORTE — SIN PÁGINA ASIGNADA
-//
-//  La página que usaba estas medidas se reemplazó por la de canasta
-//  (sección 15). Quedan acá porque la pregunta sigue siendo buena y
-//  no cuestan nada -- pero hoy ningún visual del informe las usa.
-//
-//  Un cliente con puntaje 2 cumple 2 de los 3 criterios: le falta uno
-//  solo para pasar a Alto. Estas medidas dicen CUÁL le falta y qué tan
-//  cerca está -- el ratio contra el corte que no llegó a superar.
-//
-//  Ojo con el rendimiento: "Cercanía al criterio que falta" recorre las
-//  filas de Métricas por unidad de cada cliente. En una tabla ORDENADA
-//  POR OTRA COLUMNA (ventas, por ejemplo) se evalúa solo en las filas
-//  visibles y es instantánea; ordenando POR esta medida, Power BI la
-//  calcula sobre todos los clientes del filtro y se pone lenta.
-// =====================================================================
-
-Mejor cercanía a C1 =
-MAXX (
-    CALCULATETABLE ( 'Métricas por unidad', REMOVEFILTERS ( Unidades ) ),
-    DIVIDE ( 'Métricas por unidad'[upt], 'Métricas por unidad'[umbral_upt] )
-)
-
-
-Mejor cercanía a C2 =
-MAXX (
-    CALCULATETABLE ( 'Métricas por unidad', REMOVEFILTERS ( Unidades ) ),
-    DIVIDE ( 'Métricas por unidad'[pct_tickets_grandes], 'Métricas por unidad'[umbral_pct] )
-)
-
-
-Cercanía a C3 =
-DIVIDE ( SELECTEDVALUE ( Clientes[venta_promedio_ticket] ), [Umbral C3] )
-
-
-// De los criterios que NO cumple, qué tan cerca está del más cercano.
-// 1,0 = justo en el corte. Los criterios que sí cumple no entran: la
-// pregunta es qué le falta, no qué le sobra.
-Cercanía al criterio que falta =
-VAR _r1 = IF ( SELECTEDVALUE ( Clientes[c1_upt_alto] )         = 0, [Mejor cercanía a C1] )
-VAR _r2 = IF ( SELECTEDVALUE ( Clientes[c2_pct_grandes_alto] ) = 0, [Mejor cercanía a C2] )
-VAR _r3 = IF ( SELECTEDVALUE ( Clientes[c3_ventas_alto] )      = 0, [Cercanía a C3] )
-RETURN
-    MAXX ( { _r1, _r2, _r3 }, [Value] )
-
-
-Qué le falta para subir =
-VAR _c1     = SELECTEDVALUE ( Clientes[c1_upt_alto] )
-VAR _c2     = SELECTEDVALUE ( Clientes[c2_pct_grandes_alto] )
-VAR _c3     = SELECTEDVALUE ( Clientes[c3_ventas_alto] )
-VAR _faltan = ( 1 - _c1 ) + ( 1 - _c2 ) + ( 1 - _c3 )
-VAR _pct    = FORMAT ( [Cercanía al criterio que falta], "0%", "es-PY" )
-RETURN
-    SWITCH (
-        TRUE (),
-        ISBLANK ( _c1 ), BLANK (),
-        _faltan = 0, "Ya cumple los tres criterios.",
-        _faltan > 1, "Le faltan " & _faltan & " criterios para llegar a Alto.",
-        _c1 = 0, "Le falta volumen por visita: su promedio de unidades por factura está al " & _pct &
-                 " del corte en su mejor unidad de medida.",
-        _c2 = 0, "Le falta repetirlo: ya compra grande, pero está al " & _pct &
-                 " del porcentaje de facturas grandes que pide el criterio, en su mejor unidad de medida.",
-                 "Le falta valor por visita: deja el " & _pct &
-                 " del corte en una factura promedio."
-    )
-
-
-Clientes a un criterio de Alto =
-CALCULATE ( [Cantidad de clientes], KEEPFILTERS ( Clientes[puntaje] = 2 ) )
-
-
-// Para el gráfico de "cuál es el criterio que les falta": la barra
-// larga es el criterio que más gente no cumple.
-% al que le falta el criterio =
-VAR _cumple = [% que cumple el criterio]
-RETURN
-    IF ( NOT ISBLANK ( _cumple ), 1 - _cumple )
 
 
 // =====================================================================
@@ -742,7 +872,7 @@ RETURN
     " veces lo que deja un cliente cualquiera de la base."
 
 
-Venta promedio por factura =
+Venta promedio por factura del cliente =
 SELECTEDVALUE ( Clientes[venta_promedio_ticket] )
 
 
@@ -788,16 +918,34 @@ RETURN
 // Corre sobre una sola factura. No usarla en un visual sin ticket_id
 // filtrado.
 Cómo se suma =
+// Facturas y Ventas no están relacionadas y no pueden estarlo: las dos ya
+// cuelgan de Clientes, y unirlas por ticket_id crearía un segundo camino.
+// TREATAS aplica los valores de una columna como filtro sobre otra sin
+// relación de por medio.
+//
+// La guarda del ISBLANK no es prolijidad: SELECTEDVALUE devuelve vacío
+// cuando hay más de una factura en contexto, y sin ella TREATAS recibiría
+// ese vacío y la medida devolvería el desglose de todo lo filtrado.
 VAR _u = SELECTEDVALUE ( Facturas[unidad_medida] )
-VAR _lineas = CALCULATETABLE ( 'Líneas de venta', Productos[unidad_medida] = _u )
+VAR _t = SELECTEDVALUE ( Facturas[ticket_id] )
+VAR _lineas =
+    CALCULATETABLE (
+        Ventas,
+        TREATAS ( { _t }, Ventas[ticket_id] ),
+        Productos[unidad_medida] = _u
+    )
 RETURN
-    CONCATENATEX (
-        _lineas,
-        VAR _v = ROUND ( 'Líneas de venta'[unidades], 2 )
-        RETURN
-            IF ( _v = ROUND ( _v, 0 ), FORMAT ( _v, "#,##0", "es-PY" ), FORMAT ( _v, "#,##0.00", "es-PY" ) ),
-        " + ",
-        'Líneas de venta'[unidades], DESC
+    IF (
+        ISBLANK ( _t ) || ISBLANK ( _u ),
+        BLANK (),
+        CONCATENATEX (
+            _lineas,
+            VAR _v = ROUND ( Ventas[unidades], 2 )
+            RETURN
+                IF ( _v = ROUND ( _v, 0 ), FORMAT ( _v, "#,##0", "es-PY" ), FORMAT ( _v, "#,##0.00", "es-PY" ) ),
+            " + ",
+            Ventas[unidades], DESC
+        )
     )
 
 
@@ -823,54 +971,6 @@ RETURN
 
 
 // =====================================================================
-//  14. DIAGNÓSTICO — temporal, se borra cuando el modelo esté validado
-//
-//  Poner "Control de consistencia" como columna al lado de las ✔/✘ del
-//  ranking. Contesta, fila por fila, si el problema es del modelo o del
-//  dato:
-//
-//    filas <> clientes distintos -> la tabla Clientes tiene filas
-//        duplicadas, o el visual está agrupando por una columna que no
-//        es única (ci_ruc, nombre) en vez de cliente_id_limpio.
-//    suma criterios <> suma puntaje -> mayoristas_v3_resumen se
-//        contradice a sí misma y hay que volver a dbt.
-// =====================================================================
-
-Control de consistencia =
-VAR _filas = COUNTROWS ( Clientes )
-VAR _dist  = DISTINCTCOUNT ( Clientes[cliente_id_limpio] )
-VAR _crit  = SUM ( Clientes[c1_upt_alto] ) + SUM ( Clientes[c2_pct_grandes_alto] )
-           + SUM ( Clientes[c3_ventas_alto] )
-VAR _pje   = SUM ( Clientes[puntaje] )
-RETURN
-    "filas: " & _filas & "  ·  clientes distintos: " & _dist &
-    "  ·  suma criterios: " & _crit & "  ·  suma puntaje: " & _pje &
-    SWITCH (
-        TRUE (),
-        _filas <> _dist, "   → LA TABLA CLIENTES TIENE FILAS DUPLICADAS",
-        _crit <> _pje,   "   → EL DATO ES INCONSISTENTE",
-                         "   → consistente"
-    )
-
-
-// Para una tarjeta suelta: cuántos clientes de toda la base tienen el
-// puntaje peleado con sus tres criterios. Tiene que dar 0.
-Clientes con puntaje inconsistente =
-COUNTROWS (
-    FILTER (
-        Clientes,
-        Clientes[puntaje]
-            <> Clientes[c1_upt_alto] + Clientes[c2_pct_grandes_alto] + Clientes[c3_ventas_alto]
-    )
-)
-
-
-// Tiene que dar 0. Si da otra cosa, el merge de Power Query duplicó filas.
-Filas duplicadas en Clientes =
-COUNTROWS ( Clientes ) - DISTINCTCOUNT ( Clientes[cliente_id_limpio] )
-
-
-// =====================================================================
 //  15. CANASTA — qué, dónde y cuándo compra cada segmento
 //
 //  Sobre mayoristas_v3_canasta (grano nivel x frecuencia x sucursal x
@@ -879,8 +979,6 @@ COUNTROWS ( Clientes ) - DISTINCTCOUNT ( Clientes[cliente_id_limpio] )
 //  semana y el mes salen todos del Calendario -- ninguno vive en el
 //  mart. El nombre de sucursal, del seed.
 // =====================================================================
-
-Venta canasta = SUM ( Canasta[venta_gs] )
 
 // ---------------------------------------------------------------------
 // LAS TRES MEDIDAS DE PORCENTAJE ESTÁN ATADAS A SU EJE. NO SON
@@ -910,8 +1008,33 @@ Venta canasta = SUM ( Canasta[venta_gs] )
 // o "Alto y semanal".
 % del segmento en esta categoría =
 DIVIDE (
-    [Venta canasta],
-    CALCULATE ( [Venta canasta], REMOVEFILTERS ( Productos ) )
+    [Venta],
+    CALCULATE ( [Venta], REMOVEFILTERS ( Productos ) )
+)
+
+
+// La misma cuenta pero sobre clientes en vez de plata: de los clientes
+// del segmento, que porcentaje compro esto. El denominador saca los
+// filtros de Productos, asi que es "el segmento entero" y no "el segmento
+// en esta fila". Funciona con cualquier atributo de Productos en el eje:
+// unidad de medida, categoria, marca.
+//
+// NO CONFUNDIR con la otra direccion. Son dos preguntas transpuestas:
+//
+//   [% de clientes que compra]  --  de los 17.174 clientes Alto,
+//     cuantos compran KILOS. Denominador: el segmento.
+//
+//   [% de clientes]  --  de todos los que compran KILOS, cuantos son
+//     Alto. Denominador: la base entera. Saca los filtros de Niveles y
+//     Clientes, no los de Productos.
+//
+// La primera describe al segmento, la segunda describe a la unidad de
+// medida. Las dos son utiles y dan numeros muy distintos: el 85% de los
+// Alto compra Unid, pero los Alto son el 4% de los que compran Unid.
+% de clientes que compra =
+DIVIDE (
+    [Clientes activos],
+    CALCULATE ( [Clientes activos], REMOVEFILTERS ( Productos ) )
 )
 
 
@@ -927,8 +1050,8 @@ DIVIDE (
 // el usuario esté mirando un trimestre.
 % del segmento en este período =
 DIVIDE (
-    [Venta canasta],
-    CALCULATE ( [Venta canasta], ALLSELECTED ( Calendario ) )
+    [Venta],
+    CALCULATE ( [Venta], ALLSELECTED ( Calendario ) )
 )
 
 
@@ -953,28 +1076,88 @@ DIVIDE (
 //
 // Igual que las de porcentaje, esta medida está atada al eje de
 // Productos. Sobre un eje de tiempo devuelve 1,0 en todas las filas.
-Índice de afinidad =
-VAR _cat_nivel = [Venta canasta]
-VAR _nivel     = CALCULATE ( [Venta canasta], REMOVEFILTERS ( Productos ) )
-VAR _cat_todos =
+// Hay DOS índices de afinidad, y contestan preguntas distintas.
+//
+//   (venta)    -- cuánto de su PLATA deja este segmento en la categoría.
+//                 Sirve para priorizar comercialmente: es donde está el
+//                 dinero. Una categoría cara puede dar alto sin que se
+//                 lleven muchas piezas.
+//   (unidades) -- cuánto VOLUMEN se lleva. Es el que habla el idioma de
+//                 la metodología, que clasifica por unidades por
+//                 factura, no por guaraníes. Una categoría barata que
+//                 se lleva por bulto aparece acá y no en el de venta.
+//
+// El denominador de los dos usa ALLEXCEPT y no REMOVEFILTERS ( Productos ):
+// unidad_medida vive en Productos, así que sacar los filtros de esa tabla
+// entera también sacaría la unidad de medida, y el "total del segmento"
+// del denominador quedaría mezclando kilos con unidades mientras el
+// numerador mira una sola. ALLEXCEPT saca las categorías y conserva la
+// unidad.
+Índice de afinidad (venta) =
+// El segmento puede entrar por tres puertas: la dimensión Niveles, la
+// dimensión Frecuencias, o un filtro directo sobre Clientes -- que ahora
+// llega, porque el drill-through alcanza esta página. El denominador
+// tiene que sacar las tres o el índice da 1,0 en todas las filas.
+VAR _cat_seg = [Venta]
+VAR _seg =
+    CALCULATE ( [Venta], ALLEXCEPT ( Productos, Productos[unidad_medida] ) )
+VAR _cat_base =
     CALCULATE (
-        [Venta canasta],
+        [Venta],
         REMOVEFILTERS ( Niveles ),
-        REMOVEFILTERS ( Canasta[nivel_mayorista] ),
         REMOVEFILTERS ( Frecuencias ),
-        REMOVEFILTERS ( Canasta[frecuencia_compra] )
+        REMOVEFILTERS ( Clientes )
     )
-VAR _todos =
+VAR _base =
     CALCULATE (
-        [Venta canasta],
-        REMOVEFILTERS ( Productos ),
+        [Venta],
+        ALLEXCEPT ( Productos, Productos[unidad_medida] ),
         REMOVEFILTERS ( Niveles ),
-        REMOVEFILTERS ( Canasta[nivel_mayorista] ),
         REMOVEFILTERS ( Frecuencias ),
-        REMOVEFILTERS ( Canasta[frecuencia_compra] )
+        REMOVEFILTERS ( Clientes )
     )
 RETURN
-    DIVIDE ( DIVIDE ( _cat_nivel, _nivel ), DIVIDE ( _cat_todos, _todos ) )
+    DIVIDE ( DIVIDE ( _cat_seg, _seg ), DIVIDE ( _cat_base, _base ) )
+
+
+// Mismo cálculo sobre unidades, con una guarda que no es opcional.
+//
+// Sumar unidades entre productos de distinta unidad de medida no
+// significa nada: 130 kilos más 697 unidades no son "827". Ese es
+// literalmente el error que dio origen a esta metodología. Por eso la
+// medida devuelve VACÍO mientras haya más de una unidad de medida en
+// contexto -- SELECTEDVALUE da blanco cuando ve más de un valor.
+//
+// En la práctica: el visual queda vacío hasta que se elige una unidad de
+// medida en el segmentador, y también en las filas de categorías que
+// mezclan unidades. No es una molestia a esquivar: es la medida negando
+// un número que no se puede sostener.
+Índice de afinidad (unidades) =
+VAR _u = SELECTEDVALUE ( Productos[unidad_medida] )
+VAR _cat_seg = [Unidades]
+VAR _seg =
+    CALCULATE ( [Unidades], ALLEXCEPT ( Productos, Productos[unidad_medida] ) )
+VAR _cat_base =
+    CALCULATE (
+        [Unidades],
+        REMOVEFILTERS ( Niveles ),
+        REMOVEFILTERS ( Frecuencias ),
+        REMOVEFILTERS ( Clientes )
+    )
+VAR _base =
+    CALCULATE (
+        [Unidades],
+        ALLEXCEPT ( Productos, Productos[unidad_medida] ),
+        REMOVEFILTERS ( Niveles ),
+        REMOVEFILTERS ( Frecuencias ),
+        REMOVEFILTERS ( Clientes )
+    )
+RETURN
+    IF (
+        ISBLANK ( _u ),
+        BLANK (),
+        DIVIDE ( DIVIDE ( _cat_seg, _seg ), DIVIDE ( _cat_base, _base ) )
+    )
 
 
 // El titular de la página: la categoría que más distingue al segmento
@@ -985,13 +1168,13 @@ RETURN
 // solo compran tres clientes Alto daría 40x y no significa nada. El
 // piso descarta esos casos antes de elegir el máximo.
 Titular de afinidad =
-VAR _venta_nivel = CALCULATE ( [Venta canasta], REMOVEFILTERS ( Productos ) )
+VAR _venta_nivel = CALCULATE ( [Venta], REMOVEFILTERS ( Productos ) )
 VAR _piso = 0.01 * _venta_nivel
 VAR _cats =
     ADDCOLUMNS (
         CALCULATETABLE ( VALUES ( Productos[categoria_1] ), REMOVEFILTERS ( Productos ) ),
-        "@afinidad", [Índice de afinidad],
-        "@venta",    [Venta canasta]
+        "@afinidad", [Índice de afinidad (venta)],
+        "@venta",    [Venta]
     )
 VAR _relevantes = FILTER ( _cats, [@venta] >= _piso )
 VAR _top = TOPN ( 1, _relevantes, [@afinidad], DESC )
@@ -1019,6 +1202,9 @@ RETURN
 // La frase que hace legible el eje del gráfico de afinidad para
 // alguien que lo ve por primera vez.
 Cómo leer la afinidad =
+"Hay dos índices: el de venta mide la plata que deja el segmento en la categoría, el de unidades " &
+"mide el volumen que se lleva. El de unidades pide elegir una unidad de medida, porque sumar kilos " &
+"con unidades sueltas no significa nada. " &
 "1,0 es comprar esa categoría en la misma proporción que el resto de la base. " &
 "Por encima de 1, el segmento la compra de más; por debajo, de menos. " &
 "Se descartan las categorías que pesan menos del 1% del segmento en esta categoría: " &
@@ -1030,8 +1216,8 @@ Cómo leer la afinidad =
 // tooltips.
 % de la venta en esta sucursal =
 DIVIDE (
-    [Venta canasta],
-    CALCULATE ( [Venta canasta], REMOVEFILTERS ( Sucursales ) )
+    [Venta],
+    CALCULATE ( [Venta], REMOVEFILTERS ( Sucursales ) )
 )
 
 
@@ -1074,8 +1260,17 @@ Visitas = SUM ( Clientes[visitas] )
 Días entre visitas (mediana) = MEDIAN ( Clientes[dias_entre_visitas] )
 
 
+// Una visita es un DIA con compra, no una factura: Clientes[visitas] sale
+// de count(distinct fecha_venta). Un cliente que se lleva kilos y unidades
+// en dos facturas del mismo dia hizo una visita, no dos.
+//
+// Ojo: [Visitas] es una columna congelada de Clientes y cubre los 12
+// meses enteros, no responde al segmentador de fecha. Con un mes puesto,
+// el numerador se achica y el denominador no. Para una lectura del
+// periodo hay que usar [Venta por factura], que si es del periodo.
 Venta por visita =
-DIVIDE ( [Ventas totales], [Visitas] )
+DIVIDE ( [Venta], [Visitas] )
+
 
 
 // % de la cartera visible que cae en cada frecuencia. Mismo criterio
@@ -1124,7 +1319,9 @@ RETURN
 // primer vendedor que vea "Semanal" va a suponer que el sistema mira
 // los últimos 7 días.
 Cómo se calcula la frecuencia =
+"Una visita es un día con compra, sin importar cuántas facturas se hayan emitido ese día. " &
 "Si un cliente vino por primera vez en enero, por última en diciembre y en el medio 25 veces, entre esas " &
 "25 visitas hubo 24 intervalos: 365 ÷ 24 = 15 días entre visita y visita. Ese cliente es quincenal. " &
-"No mira los últimos días, es el ritmo a lo largo de los 12 meses. Un cliente con una sola visita —o con " &
-"varias facturas del mismo día— aparece como «Visita única»."
+"No mira los últimos días, es el ritmo a lo largo de los 12 meses. Un cliente que compró en un solo día " &
+"aparece como «Visita única». Un promedio no distingue un hábito de una ráfaga: quien vino 20 veces en " &
+"una semana y una vez 11 meses después también da unos 18 días."
