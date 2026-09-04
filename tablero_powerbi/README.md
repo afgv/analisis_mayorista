@@ -45,9 +45,6 @@ python generar_tsv.py medidas_radar_ventas.dax
 Hay que regenerarlo cada vez que se edita una medida. Si los dos archivos se
 desincronizan, alguien va a pegar la versión vieja sin darse cuenta.
 
-`medidas_radar_mayorista.dax` es la versión anterior, la del modelo sin la línea
-de venta. Queda como referencia.
-
 ## Los tres criterios, explicados sin tecnicismos
 
 `diagramas/` tiene siete diagramas pensados para alguien que no va a leer una
