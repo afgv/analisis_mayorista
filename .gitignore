@@ -306,3 +306,6 @@ checkpoints/
 tablero_powerbi/node_modules/
 tablero_powerbi/.schemas/
 tablero_powerbi/package-lock.json
+tablero_powerbi/diagramas
+tablero_powerbi/*.html
+tablero_powerbi/generar_tsv.py
