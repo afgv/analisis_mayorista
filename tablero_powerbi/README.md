@@ -67,7 +67,8 @@ Están en SVG para que escalen sin perder nitidez al proyectarlos.
 del script pisa cualquier cambio hecho sobre el archivo. El texto vive en ese
 script, y los cortes que aparecen en los ejemplos están como constantes al
 principio: después de cada `dbt build` de la cadena de mayoristas hay que
-releerlos con `analyses/verificar_umbral_ticket_grande.sql` y volver a generar.
+releerlos con `analyses/metodologia_mayoristas_v3.sql` (sección 2) y volver a
+generar.
 
 ```
 python diagramas/generar_diagramas.py
