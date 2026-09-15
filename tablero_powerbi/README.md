@@ -64,11 +64,13 @@ pregunte por qué su cuenta quedó en un nivel y no en otro.
 Están en SVG para que escalen sin perder nitidez al proyectarlos.
 
 **No se editan a mano.** Salen de `diagramas/generar_diagramas.py`, y una corrida
-del script pisa cualquier cambio hecho sobre el archivo. El texto vive en ese
-script, y los cortes que aparecen en los ejemplos están como constantes al
-principio: después de cada `dbt build` de la cadena de mayoristas hay que
-releerlos con `analyses/metodologia_mayoristas_v3.sql` (sección 2) y volver a
-generar.
+del script pisa cualquier cambio hecho sobre el archivo. El texto de cada
+diagrama vive en ese script; los cortes, umbrales y porcentajes de
+cumplimiento se leen en vivo de la base al arrancar (mismas consultas que
+`analyses/metodologia_mayoristas_v3.sql`, sección 2), así que después de cada
+`dbt build` de la cadena de mayoristas alcanza con volver a correrlo -- no hay
+ningún número que copiar a mano. Necesita el `.env` de la raíz del repo y
+conexión a la base (VPN si hace falta).
 
 ```
 python diagramas/generar_diagramas.py
