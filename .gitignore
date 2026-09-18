@@ -309,3 +309,9 @@ tablero_powerbi/package-lock.json
 tablero_powerbi/diagramas
 tablero_powerbi/*.html
 tablero_powerbi/generar_tsv.py
+
+# Documentos de trabajo -- prompts de IA, datos para armar presentaciones,
+# reportes de validación puntual. Vinculados a una corrida o una reunión
+# concreta, no a la metodología en sí (eso vive en el README y en los
+# comentarios de los modelos). Se suman acá a mano, uno por uno.
+datos_actualizacion_presentacion_v4.md
