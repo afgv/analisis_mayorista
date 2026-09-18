@@ -315,3 +315,5 @@ tablero_powerbi/generar_tsv.py
 # concreta, no a la metodología en sí (eso vive en el README y en los
 # comentarios de los modelos). Se suman acá a mano, uno por uno.
 datos_actualizacion_presentacion_v4.md
+prompt_presentacion_mayoristas.txt
+actualizar_presentacion_mayoristas.md
