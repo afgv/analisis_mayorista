@@ -317,3 +317,5 @@ tablero_powerbi/generar_tsv.py
 datos_actualizacion_presentacion_v4.md
 prompt_presentacion_mayoristas.txt
 actualizar_presentacion_mayoristas.md
+*.pptx
+unpacked_pptx/
