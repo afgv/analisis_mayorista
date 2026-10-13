@@ -1,6 +1,25 @@
 // =====================================================================
 //  RADAR MAYORISTA — medidas DAX
-//  Metodología Mayoristas v3 (marts_mayoristas.mayoristas_v3_*)
+//  Metodología Mayoristas v4 (marts_mayoristas.mayoristas_v3_*) -- los
+//  nombres físicos de las tablas dbt siguen con el prefijo v3 (no se
+//  renombraron en el pase a v4), pero C1/C2 ahora promedian unidades por
+//  producto distinto en vez de sumarlas, y C3 corta en el percentil 90
+//  en vez del 75. Ver el header de int_mayoristas_v3_tickets_por_unidad.sql
+//  y mayoristas_v3_resumen.sql en dbt_ahorrazo para el detalle.
+//
+//  REQUISITO PARA 3 MEDIDAS NUEVAS -- columnas de explicabilidad que dbt
+//  ya expone en producción pero que TODAVÍA NO ESTÁN cargadas en Power
+//  Query. Sin esto, [Por qué esta factura] y [Cómo se suma] se degradan
+//  solas a la versión corta (sin el desglose por producto), y [Productos
+//  por factura del cliente] queda vacía -- no van a tirar error, pero
+//  tampoco van a mostrar nada nuevo hasta que se agreguen:
+//    - Facturas[unidades_suma]           (en la consulta de Facturas)
+//    - Facturas[productos_distintos]     (en la consulta de Facturas)
+//    - 'Métricas por unidad'[productos_por_factura]  (en esa consulta)
+//  Las tres ya están en mayoristas_v3_tickets_unidad y
+//  mayoristas_v3_metricas_unidad -- alcanza con abrir el editor de Power
+//  Query, entrar a cada consulta y agregar la columna que falte (o
+//  destildar "Choose columns" si la consulta trae todo por defecto).
 //
 //  OJO CON FORMAT Y EL PATRÓN "#,##0.##": con un locale explícito, DAX
 //  emite el separador decimal aunque no haya decimales que mostrar --
@@ -164,10 +183,10 @@ DIVIDE ( [Venta], [Clientes activos] )
 // OJO: promedio ENTRE CLIENTES del ticket promedio de cada cliente.
 // NO es el ticket promedio del segmento. Cada cliente pesa igual, venga
 // 3 veces al año o 300. Se hace así a propósito: es exactamente la
-// óptica con la que C3 calcula su umbral (percentil 75 entre clientes),
-// así que el KPI y el criterio hablan el mismo idioma. Un promedio
-// ponderado por ticket daría otro número y no compararía contra
-// umbral_c3.
+// óptica con la que C3 calcula su umbral (percentil 90 entre clientes,
+// subido desde el 75 con v4), así que el KPI y el criterio hablan el
+// mismo idioma. Un promedio ponderado por ticket daría otro número y no
+// compararía contra umbral_c3.
 // HAY TRES MEDIDAS PARECIDAS Y NO SON LA MISMA. Antes de poner una en un
 // visual, elegir cual de estas tres preguntas se esta contestando:
 //
@@ -246,6 +265,21 @@ IF (
 )
 
 
+// Nueva con v4: el promedio de productos distintos por factura de este
+// cliente en esta unidad, mismo grano que UPT. No entra en ningún
+// puntaje -- es la columna que explica de dónde sale el UPT. Un cliente
+// con UPT alto y esto bajo se lleva mucho de pocos productos; con los
+// dos altos, compra variado en cantidad y por eso promedia alto. Requiere
+// que 'Métricas por unidad'[productos_por_factura] esté cargada en Power
+// Query -- ver la nota de columnas nuevas al pie del archivo.
+Productos por factura del cliente =
+IF (
+    HASONEVALUE ( Unidades[unidad_medida] ),
+    SELECTEDVALUE ( 'Métricas por unidad'[productos_por_factura] ),
+    BLANK ()
+)
+
+
 % tickets grandes del cliente =
 IF (
     HASONEVALUE ( Unidades[unidad_medida] ),
@@ -269,9 +303,10 @@ Umbral % grandes       = SELECTEDVALUE ( Unidades[umbral_pct] )
 Umbral factura grande  = SELECTEDVALUE ( Unidades[umbral_ticket_grande] )
 
 
-// El normalizador. Unid corta en ~19,5 y KILOS en ~6,7: graficarlos
-// crudos uno al lado del otro vuelve a mezclar unidades. El ratio los
-// pone en la misma escala — 1,0 = justo en el corte.
+// El normalizador. Con v4 (unidades = promedio por producto distinto)
+// Unid corta en ~1,70 y KILOS en ~1,22: graficarlos crudos uno al lado
+// del otro vuelve a mezclar unidades. El ratio los pone en la misma
+// escala — 1,0 = justo en el corte.
 UPT vs umbral (veces) =
 DIVIDE ( [UPT del cliente], [Umbral UPT] )
 
@@ -442,8 +477,28 @@ CALCULATE (
 // Las unidades que se comparan contra el corte, dentro de una unidad de
 // medida. Sale de Facturas y no de Ventas a proposito: es exactamente el
 // numero que el modelo compara contra umbral_ticket_grande.
+//
+// SUM y no un promedio: pensada para un solo ticket_id x unidad_medida en
+// contexto (una fila de Facturas), donde SUM de una sola fila da el valor
+// de esa fila. Con mas de una factura filtrada, suma promedios de
+// facturas distintas entre si -- un numero que no significa nada. Para
+// eso existe [Promedio de unidades por producto (factura)] mas abajo, que
+// se niega a devolver ese numero en vez de mostrarlo mal.
 Unidades contra el corte =
 SUM ( Facturas[unidades] )
+
+
+// El promedio de unidades por producto distinto de ESTA factura, en esta
+// unidad de medida -- Facturas[unidades] ya es ese promedio (calculado en
+// dbt, no acá: ver la regla de oro del header). Esta medida es la versión
+// segura de [Unidades contra el corte] para cualquier visual que no sea
+// específicamente la comparación contra el corte -- una tarjeta, un
+// tooltip, un título dinámico -- porque usa SELECTEDVALUE en vez de SUM:
+// con una sola factura x unidad en contexto da el número; con más de una,
+// da BLANK en vez de sumar promedios de facturas que no tienen nada que
+// ver entre sí.
+Promedio de unidades por producto (factura) =
+SELECTEDVALUE ( Facturas[unidades] )
 
 
 // Cuanto pesa cada linea dentro de la factura. El denominador saca el
@@ -545,9 +600,10 @@ RETURN
         TRUE (),
         ISBLANK ( _ok ), BLANK (),
         _ok = 1,
-            "Se lleva mucho en cada visita. Su promedio de unidades por factura en " & _u &
+            "Se lleva mucho de cada producto en cada visita. Su promedio de unidades por producto distinto, " &
+            "por factura, en " & _u &
             " está entre el 25% más alto de todos los clientes que compran en esa misma unidad de medida.",
-            "Su promedio de unidades por factura no llega al corte en ninguna unidad de medida."
+            "Su promedio de unidades por producto distinto, por factura, no llega al corte en ninguna unidad de medida."
     )
 
 
@@ -599,21 +655,39 @@ RETURN
 
 // -- explicación a nivel de factura ------------------------------------
 
+// Con v4, _u (Facturas[unidades]) ya es un promedio por producto
+// distinto, no la suma de la factura -- mostrar solo ese número no
+// contesta "de dónde sale". _suma y _prod son las dos columnas de
+// explicabilidad que dbt agrega junto con unidades (unidades_suma,
+// productos_distintos): con las tres juntas la frase se puede reproducir
+// a mano. Requiere que Facturas[unidades_suma] y
+// Facturas[productos_distintos] estén cargadas en Power Query -- ver la
+// nota de columnas nuevas al pie del archivo.
 Por qué esta factura =
-VAR _g   = SELECTEDVALUE ( Facturas[ticket_grande] )
-VAR _u   = SELECTEDVALUE ( Facturas[unidades] )
-VAR _um  = SELECTEDVALUE ( Facturas[umbral_ticket_grande] )
-VAR _un  = SELECTEDVALUE ( Facturas[unidad_medida] )
-VAR _u2  = ROUND ( _u,  2 )
-VAR _um2 = ROUND ( _um, 2 )
-VAR _fu  = IF ( _u2  = ROUND ( _u2,  0 ), FORMAT ( _u2,  "#,##0", "es-PY" ), FORMAT ( _u2,  "#,##0.00", "es-PY" ) )
-VAR _fum = IF ( _um2 = ROUND ( _um2, 0 ), FORMAT ( _um2, "#,##0", "es-PY" ), FORMAT ( _um2, "#,##0.00", "es-PY" ) )
+VAR _g    = SELECTEDVALUE ( Facturas[ticket_grande] )
+VAR _u    = SELECTEDVALUE ( Facturas[unidades] )
+VAR _um   = SELECTEDVALUE ( Facturas[umbral_ticket_grande] )
+VAR _un   = SELECTEDVALUE ( Facturas[unidad_medida] )
+VAR _suma = SELECTEDVALUE ( Facturas[unidades_suma] )
+VAR _prod = SELECTEDVALUE ( Facturas[productos_distintos] )
+VAR _u2   = ROUND ( _u,  2 )
+VAR _um2  = ROUND ( _um, 2 )
+VAR _s2   = ROUND ( _suma, 2 )
+VAR _fu   = IF ( _u2  = ROUND ( _u2,  0 ), FORMAT ( _u2,  "#,##0", "es-PY" ), FORMAT ( _u2,  "#,##0.00", "es-PY" ) )
+VAR _fum  = IF ( _um2 = ROUND ( _um2, 0 ), FORMAT ( _um2, "#,##0", "es-PY" ), FORMAT ( _um2, "#,##0.00", "es-PY" ) )
+VAR _fsuma = IF ( _s2 = ROUND ( _s2, 0 ), FORMAT ( _s2, "#,##0", "es-PY" ), FORMAT ( _s2, "#,##0.00", "es-PY" ) )
+VAR _detalle =
+    IF (
+        ISBLANK ( _suma ) || ISBLANK ( _prod ),
+        _fu & " " & _un,
+        _fsuma & " " & _un & " entre " & _prod & " productos distintos = " & _fu & " por producto"
+    )
 RETURN
     SWITCH (
         TRUE (),
         ISBLANK ( _g ), BLANK (),
-        _g = 1, "Grande — " & _fu & " " & _un & " en una sola factura, contra un corte de " & _fum & ".",
-                "Normal — " & _fu & " " & _un & ". El corte de factura grande en " & _un & " está en " & _fum & "."
+        _g = 1, "Grande — " & _detalle & ", contra un corte de " & _fum & ".",
+                "Normal — " & _detalle & ". El corte de factura grande en " & _un & " está en " & _fum & "."
     )
 
 
@@ -643,7 +717,7 @@ RETURN
         ISBLANK ( _um ),
         BLANK (),
         "Una factura cuenta como GRANDE a partir de " & _fum &
-        " " & [Unidad en palabras] & " en un mismo ticket."
+        " " & [Unidad en palabras] & " por producto distinto, en un mismo ticket."
     )
 
 
@@ -655,7 +729,7 @@ RETURN
         ISBLANK ( _um ),
         BLANK (),
         "Un cliente COMPRA GRANDE si su promedio llega a " & _fum &
-        " " & [Unidad en palabras] & " por factura."
+        " " & [Unidad en palabras] & " por producto distinto, por factura."
     )
 
 
@@ -676,26 +750,33 @@ Regla — C3 gasto por visita =
 "suma todo lo que compró, incluidos Blis, Metros y Ramo, porque acá todo está en guaraníes."
 
 
-// El ejemplo concreto de la página de metodología: una misma factura
-// medida contra dos cortes distintos. Las cantidades (130 kilos, 697
-// unidades) describen una factura real y son fijas; los cortes salen
-// del dato, así que la frase nunca queda vieja.
+// El ejemplo concreto de la página de metodología: una misma factura real
+// (cliente 2504462, ticket _003-007-0174692, 17/04/2026) medida contra dos
+// cortes distintos. Con v4 lo que se compara no es la suma de la factura
+// sino el promedio por producto distinto -- 148 unidades entre 19
+// productos, 8,55 kilos entre 8 productos -- así que ambos números y el
+// promedio quedan fijos (describen una factura real) y solo el corte sale
+// del dato, para que la frase nunca quede vieja.
 Ejemplo en KILOS =
 VAR _corte =
     ROUND ( CALCULATE ( [Umbral factura grande], REMOVEFILTERS ( Unidades ), Unidades[unidad_medida] = "KILOS" ), 2 )
 VAR _fc = IF ( _corte = ROUND ( _corte, 0 ), FORMAT ( _corte, "#,##0", "es-PY" ), FORMAT ( _corte, "#,##0.00", "es-PY" ) )
+VAR _prom = DIVIDE ( 8.55, 8 )
 RETURN
-    "130,0 kilos contra un corte de " & _fc &
-    "   ·   " & FORMAT ( DIVIDE ( 130, _corte ), "0.0", "es-PY" ) & "× por encima → factura grande"
+    "8,55 kilos entre 8 productos distintos = " & FORMAT ( _prom, "0.00", "es-PY" ) &
+    " contra un corte de " & _fc &
+    "   ·   " & FORMAT ( DIVIDE ( _prom, _corte ), "0.0", "es-PY" ) & "× del corte → no es grande"
 
 
 Ejemplo en Unid =
 VAR _corte =
     ROUND ( CALCULATE ( [Umbral factura grande], REMOVEFILTERS ( Unidades ), Unidades[unidad_medida] = "Unid" ), 2 )
 VAR _fc = IF ( _corte = ROUND ( _corte, 0 ), FORMAT ( _corte, "#,##0", "es-PY" ), FORMAT ( _corte, "#,##0.00", "es-PY" ) )
+VAR _prom = DIVIDE ( 148, 19 )
 RETURN
-    "697 unidades sueltas contra un corte de " & _fc &
-    "   ·   " & FORMAT ( DIVIDE ( 697, _corte ), "0.0", "es-PY" ) & "× por encima → factura grande"
+    "148 unidades entre 19 productos distintos = " & FORMAT ( _prom, "0.00", "es-PY" ) &
+    " contra un corte de " & _fc &
+    "   ·   " & FORMAT ( DIVIDE ( _prom, _corte ), "0.0", "es-PY" ) & "× por encima → factura grande"
 
 
 // =====================================================================
@@ -760,9 +841,8 @@ Nota de la tendencia =
 //  cliente con dos compras enormes entre veinte chicas cumple C1 y no
 //  C2. C2 es el filtro que separa el pico del patrón.
 //
-//  Ojo con la implicación al revés: C2 casi no puede darse SIN C1. Si
-//  el 40% (piso de umbral_pct) de sus facturas superan
-//  umbral_ticket_grande, su promedio ya vale como mínimo
+//  Ojo con la implicación al revés: si el 40% (piso de umbral_pct) de sus
+//  facturas superan umbral_ticket_grande, su promedio ya vale como mínimo
 //  0,40 x umbral_ticket_grande, y eso alcanza para pasar umbral_upt en
 //  las unidades donde 0,40 x umbral_ticket_grande >= umbral_upt.
 //  Verificar contra el dato real con:
@@ -772,8 +852,19 @@ Nota de la tendencia =
 //    from marts_mayoristas.mayoristas_v3_umbrales
 //
 //  Donde el piso quede por encima de umbral_upt, la combinación
-//  (C1 = 0, C2 = 1) no puede existir -- y el puntaje deja de ser tres
-//  bits independientes para ser una escalera: C1, después C1+C2.
+//  (C1 = 0, C2 = 1) no puede existir para esa unidad.
+//
+//  CON V4 ESTO YA NO VALE PAREJO EN LAS CUATRO UNIDADES. En v3 solo Pack
+//  rompía la implicación (su piso, 0,8, quedaba por debajo de su
+//  umbral_upt, 1,0). Con los cortes de v4 (base C1/C2 recalculada por
+//  producto distinto), KILOS (piso 1,27 > umbral_upt 1,22) y LITROS
+//  (piso 3,6 > umbral_upt 3,0) siguen sosteniendo la implicación, pero
+//  Unid (piso 1,43 < umbral_upt 1,70) y Pack (piso 0,8 < umbral_upt 1,0)
+//  ya no -- en esas dos unidades sí puede pasar (C1 = 0, C2 = 1). Unid es
+//  la unidad con más peso en la base, así que "C2 implica C1" dejó de ser
+//  una propiedad general de la metodología: es cierta en 2 de 4 unidades,
+//  no en las 4. Tratar C1/C2/C3 como tres marcas independientes, no como
+//  una escalera.
 // =====================================================================
 
 // Un ✘ tiene que significar "no cumple", nunca "no pude determinarlo".
@@ -905,15 +996,17 @@ RETURN
     )
 
 
-// La suma explícita de las líneas de producto que forman la cantidad
+// La cuenta explícita de las líneas de producto que forman el promedio
 // que se comparó contra el corte -- contesta la única pregunta que
-// queda cuando alguien discute su clasificación: "¿de dónde salieron
-// esas 697 unidades?".
+// queda cuando alguien discute su clasificación: "¿de dónde salió ese
+// promedio de unidades por producto distinto?".
 //
-// CALCULATETABLE y no FILTER + RELATED: Productos es Import y Líneas de
-// venta es DirectQuery -- la única relación limitada que queda en el
-// modelo -- y RELATED() no funciona a través de una relación limitada.
-// Filtrar por la relación sí funciona.
+// CALCULATETABLE y no FILTER + RELATED: Productos y Ventas están las dos
+// en Import (Ventas terminó importando int_ventas_12m_tabla entera en
+// vez de armar un mart de canasta aparte -- ver el header del archivo),
+// pero no hay relación entre Facturas y Ventas -- ver el porqué en el
+// comentario de abajo -- así que RELATED() no tiene camino que recorrer.
+// Filtrar con TREATAS no necesita esa relación.
 //
 // Corre sobre una sola factura. No usarla en un visual sin ticket_id
 // filtrado.
@@ -926,26 +1019,41 @@ Cómo se suma =
 // La guarda del ISBLANK no es prolijidad: SELECTEDVALUE devuelve vacío
 // cuando hay más de una factura en contexto, y sin ella TREATAS recibiría
 // ese vacío y la medida devolvería el desglose de todo lo filtrado.
-VAR _u = SELECTEDVALUE ( Facturas[unidad_medida] )
-VAR _t = SELECTEDVALUE ( Facturas[ticket_id] )
+VAR _u    = SELECTEDVALUE ( Facturas[unidad_medida] )
+VAR _t    = SELECTEDVALUE ( Facturas[ticket_id] )
+VAR _prod = SELECTEDVALUE ( Facturas[productos_distintos] )
+VAR _prom = SELECTEDVALUE ( Facturas[unidades] )
 VAR _lineas =
     CALCULATETABLE (
         Ventas,
         TREATAS ( { _t }, Ventas[ticket_id] ),
         Productos[unidad_medida] = _u
     )
+VAR _suma_texto =
+    CONCATENATEX (
+        _lineas,
+        VAR _v = ROUND ( Ventas[unidades], 2 )
+        RETURN
+            IF ( _v = ROUND ( _v, 0 ), FORMAT ( _v, "#,##0", "es-PY" ), FORMAT ( _v, "#,##0.00", "es-PY" ) ),
+        " + ",
+        Ventas[unidades], DESC
+    )
+VAR _fprom = IF ( _prom = ROUND ( _prom, 0 ), FORMAT ( _prom, "#,##0", "es-PY" ), FORMAT ( _prom, "#,##0.00", "es-PY" ) )
 RETURN
     IF (
         ISBLANK ( _t ) || ISBLANK ( _u ),
         BLANK (),
-        CONCATENATEX (
-            _lineas,
-            VAR _v = ROUND ( Ventas[unidades], 2 )
-            RETURN
-                IF ( _v = ROUND ( _v, 0 ), FORMAT ( _v, "#,##0", "es-PY" ), FORMAT ( _v, "#,##0.00", "es-PY" ) ),
-            " + ",
-            Ventas[unidades], DESC
-        )
+        // Con v4 cierra con "= entre N productos distintos = X por
+        // producto" -- sin eso, la suma sola ("26 + 23 + ...") no explica
+        // qué número se comparó de verdad contra el corte (el promedio,
+        // no la suma). Se degrada a solo la suma si productos_distintos
+        // todavía no está cargada en Power Query.
+        _suma_texto &
+            IF (
+                ISBLANK ( _prod ),
+                "",
+                " = entre " & _prod & " productos distintos = " & _fprom & " por producto"
+            )
     )
 
 
@@ -1021,7 +1129,7 @@ DIVIDE (
 //
 // NO CONFUNDIR con la otra direccion. Son dos preguntas transpuestas:
 //
-//   [% de clientes que compra]  --  de los 17.174 clientes Alto,
+//   [% de clientes que compra]  --  de los 5.541 clientes Alto,
 //     cuantos compran KILOS. Denominador: el segmento.
 //
 //   [% de clientes]  --  de todos los que compran KILOS, cuantos son
@@ -1029,8 +1137,10 @@ DIVIDE (
 //     Clientes, no los de Productos.
 //
 // La primera describe al segmento, la segunda describe a la unidad de
-// medida. Las dos son utiles y dan numeros muy distintos: el 85% de los
-// Alto compra Unid, pero los Alto son el 4% de los que compran Unid.
+// medida. Las dos son utiles y dan numeros muy distintos: un porcentaje
+// alto de los Alto puede comprar Unid, y aun asi los Alto ser una fraccion
+// chica de todos los que compran Unid (con v4, Alto es apenas 1,4% de la
+// base).
 % de clientes que compra =
 DIVIDE (
     [Clientes activos],
@@ -1049,6 +1159,52 @@ DIVIDE (
 // REMOVEFILTERS el denominador se iría a los 12 meses completos aunque
 // el usuario esté mirando un trimestre.
 % del segmento en este período =
+DIVIDE (
+    [Venta],
+    CALCULATE ( [Venta], ALLSELECTED ( Calendario ) )
+)
+
+
+// ---------------------------------------------------------------------
+// LAS DOS DE ACÁ SON EL EQUIVALENTE A LAS DE ARRIBA PERO A NIVEL DE UN
+// CLIENTE, NO DE UN SEGMENTO -- para un gráfico en la ficha del cliente
+// (evolución mensual, por producto, por día de la semana). Mismo problema,
+// mismo fix: [Venta] ya responde al cliente en contexto (llega por la
+// relación Clientes -> Ventas), así que solo hace falta sacar del
+// denominador el filtro que pone el EJE del visual, sin tocar el filtro
+// de cliente. Atadas a su eje igual que las de arriba -- no son
+// intercambiables, y el síntoma de usar la equivocada es el mismo: 100%
+// en todas las filas.
+//
+//   eje sobre Productos                         -> % de ventas del cliente en esta categoría
+//   eje sobre Calendario (mes, día de la semana,
+//   quincena, semana -- todas viven en la misma
+//   tabla, una sola medida cubre las tres)       -> % de ventas del cliente en este período
+//
+// Con más de un cliente en contexto (ej. sin filtrar a uno en particular)
+// no se rompen: [Venta] pasa a ser la suma de los clientes filtrados, y el
+// % pasa a leerse "de lo que compró ESTE GRUPO de clientes", mismo criterio
+// que ya usan las medidas de segmento de arriba.
+// ---------------------------------------------------------------------
+
+// Eje sobre Productos. Saca Productos del denominador, nada más --
+// respeta el cliente (o los clientes) en contexto.
+% de ventas del cliente en esta categoría =
+DIVIDE (
+    [Venta],
+    CALCULATE ( [Venta], REMOVEFILTERS ( Productos ) )
+)
+
+
+// Eje sobre Calendario: mes (evolución mensual), día de la semana, día
+// del mes, quincena o semana -- las cinco salen de la misma tabla, así
+// que sirve para las tres preguntas del pedido original (mensual, por
+// producto la de arriba, por día de la semana esta) sin escribir una
+// medida por columna.
+//
+// ALLSELECTED y no REMOVEFILTERS, mismo motivo que la del segmento: saca
+// el filtro que pone el eje pero respeta un slicer de fechas si lo hay.
+% de ventas del cliente en este período =
 DIVIDE (
     [Venta],
     CALCULATE ( [Venta], ALLSELECTED ( Calendario ) )
@@ -1123,10 +1279,12 @@ RETURN
 // Mismo cálculo sobre unidades, con una guarda que no es opcional.
 //
 // Sumar unidades entre productos de distinta unidad de medida no
-// significa nada: 130 kilos más 697 unidades no son "827". Ese es
-// literalmente el error que dio origen a esta metodología. Por eso la
-// medida devuelve VACÍO mientras haya más de una unidad de medida en
-// contexto -- SELECTEDVALUE da blanco cuando ve más de un valor.
+// significa nada: kilos más unidades sueltas no dan un número que
+// exista. Ese fue justamente el error de origen -- sumar la factura
+// entera sin distinguir cuántos productos distintos la componían -- que
+// motivó el cambio de fórmula de v3 a v4. Por eso la medida devuelve
+// VACÍO mientras haya más de una unidad de medida en contexto --
+// SELECTEDVALUE da blanco cuando ve más de un valor.
 //
 // En la práctica: el visual queda vacío hasta que se elige una unidad de
 // medida en el segmentador, y también en las filas de categorías que
